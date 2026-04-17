@@ -14,20 +14,14 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 
-export const setupRecaptcha = (elementId) => {
+export const sendOTP = async (phoneNumber) => {
   if (!window.recaptchaVerifier) {
-    window.recaptchaVerifier = new RecaptchaVerifier(auth, elementId, {
+    window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
       size: 'invisible',
       callback: () => {},
-      'expired-callback': () => { window.recaptchaVerifier = null; }
     });
   }
-  return window.recaptchaVerifier;
-};
-
-export const sendOTP = async (phoneNumber) => {
-  const verifier = setupRecaptcha('recaptcha-container');
-  const confirmation = await signInWithPhoneNumber(auth, '+91' + phoneNumber, verifier);
+  const confirmation = await signInWithPhoneNumber(auth, '+91' + phoneNumber, window.recaptchaVerifier);
   window.confirmationResult = confirmation;
   return confirmation;
 };
