@@ -264,45 +264,33 @@ export default function App() {
   };
   const iUp=()=>{ setImgDrawing(false); setIsImgResizing(false); setActiveImgHandle(null); setIsImgMoving(false); setImgMoveOffset(null); };
 
-  // ── Blur — pixelation + blur, works on any size ──────────
+  // ── Strong Gaussian blur — proper professional effect ─────
   const applyBlur=(ctx,canvas,box)=>{
     if(!box||box.w<4||box.h<4) return;
     const{x,y,w,h}=box;
-    const pad=Math.min(30,Math.min(w,h)*0.15);
+    const blurAmt=Math.max(18,Math.min(w,h)*0.45);
+    const pad=16;
     const bx=Math.max(0,x-pad), by=Math.max(0,y-pad);
     const bw=Math.min(canvas.width-bx,w+pad*2);
     const bh=Math.min(canvas.height-by,h+pad*2);
 
-    // Step 1: pixelate — draw tiny then scale up (no smoothing)
-    const pixSize = Math.max(4, Math.round(Math.min(bw,bh)/12));
-    const tiny = document.createElement("canvas");
-    tiny.width  = Math.max(1,Math.round(bw/pixSize));
-    tiny.height = Math.max(1,Math.round(bh/pixSize));
-    const tctx = tiny.getContext("2d");
-    tctx.drawImage(canvas,bx,by,bw,bh,0,0,tiny.width,tiny.height);
-
-    // Step 2: draw pixelated back to off-screen canvas
-    const off = document.createElement("canvas");
+    const off=document.createElement("canvas");
     off.width=bw; off.height=bh;
     const octx=off.getContext("2d");
-    octx.imageSmoothingEnabled=false;
-    octx.drawImage(tiny,0,0,tiny.width,tiny.height,0,0,bw,bh);
 
-    // Step 3: apply blur on top of pixelation
-    const blurAmt=Math.max(8,Math.min(bw,bh)*0.15);
-    const off2=document.createElement("canvas");
-    off2.width=bw; off2.height=bh;
-    const octx2=off2.getContext("2d");
-    octx2.filter=`blur(${blurAmt}px)`;
-    octx2.drawImage(off,0,0);
-    octx2.filter="none";
+    // Pass 1
+    octx.filter=`blur(${blurAmt}px)`;
+    octx.drawImage(canvas,bx,by,bw,bh,0,0,bw,bh);
+    // Pass 2 — stronger
+    octx.filter=`blur(${blurAmt*0.6}px)`;
+    octx.drawImage(off,0,0,bw,bh,0,0,bw,bh);
+    octx.filter="none";
 
-    // Step 4: paste ONLY inside selection box
     ctx.save();
     ctx.beginPath();
     ctx.rect(x,y,w,h);
     ctx.clip();
-    ctx.drawImage(off2,0,0,bw,bh,bx,by,bw,bh);
+    ctx.drawImage(off,0,0,bw,bh,bx,by,bw,bh);
     ctx.restore();
   };
 
@@ -331,26 +319,80 @@ export default function App() {
     _processVideo();
   };
 
-  // ── Actual processing ─────────────────────────────────────
+  // ── REAL video processing using MediaRecorder ─────────────
   const _processVideo=()=>{
     setScreen("processing"); setProgress(0);
-    const img=new Image();
-    img.onload=()=>{
-      const out=document.createElement("canvas");
-      out.width=img.naturalWidth; out.height=img.naturalHeight;
-      const ctx=out.getContext("2d");
-      ctx.drawImage(img,0,0);
-      applyBlur(ctx,out,wBox);
-      setProcessedUrl(out.toDataURL("image/jpeg",isPaid?0.95:0.6));
-      if(user) addHistory(user.uid,{type:"video",action:"watermark_removed"});
-      let p=0;
-      const iv=setInterval(()=>{
-        p+=Math.random()*20+8;
-        if(p>=100){ clearInterval(iv); setProgress(100); setTimeout(()=>{ setShowBeforeAfter(true); setShowBefore(false); setScreen("result"); },400); return; }
-        setProgress(Math.min(p,100));
-      },120);
+    const savedBox=wBox;
+
+    const vid=document.createElement("video");
+    vid.src=videoUrl;
+    vid.muted=true;
+    vid.playsInline=true;
+    vid.crossOrigin="anonymous";
+
+    const canvas=document.createElement("canvas");
+    const ctx=canvas.getContext("2d");
+
+    const fallback=()=>{
+      // If MediaRecorder not supported, do single frame
+      const img=new Image();
+      img.onload=()=>{
+        canvas.width=img.naturalWidth; canvas.height=img.naturalHeight;
+        ctx.drawImage(img,0,0);
+        applyBlur(ctx,canvas,savedBox);
+        setProcessedUrl(canvas.toDataURL("image/jpeg",0.92));
+        setProgress(100);
+        setTimeout(()=>setScreen("result"),300);
+      };
+      img.src=capturedFrame;
     };
-    img.src=capturedFrame;
+
+    vid.onloadedmetadata=()=>{
+      canvas.width=vid.videoWidth||640;
+      canvas.height=vid.videoHeight||360;
+
+      // Check MediaRecorder support
+      const mimeType=["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"]
+        .find(m=>MediaRecorder.isTypeSupported(m));
+
+      if(!mimeType){ fallback(); return; }
+
+      try{
+        const stream=canvas.captureStream(30);
+        const recorder=new MediaRecorder(stream,{mimeType,videoBitsPerSecond:isPaid?8000000:2000000});
+        const chunks=[];
+
+        recorder.ondataavailable=e=>{ if(e.data?.size>0) chunks.push(e.data); };
+        recorder.onstop=()=>{
+          const blob=new Blob(chunks,{type:"video/webm"});
+          setProcessedUrl(URL.createObjectURL(blob));
+          if(user) addHistory(user.uid,{type:"video",action:"watermark_removed"});
+          setProgress(100);
+          setTimeout(()=>{ setShowBeforeAfter(true); setShowBefore(false); setScreen("result"); },300);
+        };
+
+        let animId;
+        const renderFrame=()=>{
+          if(!vid.paused&&!vid.ended){
+            ctx.drawImage(vid,0,0,canvas.width,canvas.height);
+            applyBlur(ctx,canvas,savedBox);
+            if(vid.duration>0) setProgress(Math.min(98,Math.round((vid.currentTime/vid.duration)*100)));
+          }
+          animId=requestAnimationFrame(renderFrame);
+        };
+
+        vid.onended=()=>{
+          cancelAnimationFrame(animId);
+          setTimeout(()=>recorder.stop(),200);
+        };
+
+        recorder.start(200);
+        vid.play().then(()=>renderFrame()).catch(fallback);
+      } catch(e){ fallback(); }
+    };
+
+    vid.onerror=fallback;
+    vid.load();
   };
 
   const _processImage=()=>{
@@ -729,8 +771,8 @@ export default function App() {
       <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center"}}>
         <div style={{textAlign:"center",padding:"0 24px",maxWidth:360,width:"100%",boxSizing:"border-box"}}>
           <div style={{width:72,height:72,borderRadius:20,background:"#f0edff",display:"flex",alignItems:"center",justifyContent:"center",margin:"0 auto 22px",fontSize:34}}>✦</div>
-          <div style={{fontSize:22,fontWeight:800,marginBottom:8}}>Applying Blur…</div>
-          <p style={{color:"#888",fontSize:15,marginBottom:24}}>Removing watermark from your video</p>
+          <div style={{fontSize:22,fontWeight:800,marginBottom:8}}>Processing Video…</div>
+          <p style={{color:"#888",fontSize:15,marginBottom:24}}>Applying blur frame by frame — please wait</p>
           <div style={{background:"#e2e2e8",borderRadius:100,height:8,overflow:"hidden",marginBottom:10}}>
             <div style={{height:"100%",background:G,width:progress+"%",transition:"width .12s",borderRadius:100}}/>
           </div>
@@ -765,11 +807,15 @@ export default function App() {
           </button>
         </div>
 
-        {/* Image fills remaining height */}
+        {/* Video/Image toggle view */}
         <div style={{flex:1,borderRadius:14,overflow:"hidden",background:"#111",display:"flex",alignItems:"center",justifyContent:"center",minHeight:0,position:"relative"}}>
           {showBefore
             ? (capturedFrame&&<img src={capturedFrame} style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}} alt="before"/>)
-            : (processedUrl&&<img src={processedUrl} style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}} alt="after"/>)
+            : (processedUrl&&(
+                processedUrl.startsWith("blob:")
+                  ? <video src={processedUrl} style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}} controls playsInline loop/>
+                  : <img src={processedUrl} style={{width:"100%",height:"100%",objectFit:"contain",display:"block"}} alt="after"/>
+              ))
           }
           <div style={{position:"absolute",top:10,left:10,background:"rgba(0,0,0,0.6)",padding:"4px 12px",borderRadius:20,fontSize:12,color:"#fff",fontWeight:600}}>
             {showBefore?"Original":"Watermark Removed ✓"}
@@ -785,10 +831,13 @@ export default function App() {
 
         {/* Download */}
         <button onClick={()=>{
-          // Download original video file (blur is applied as visual preview)
+          if(!processedUrl) return;
           const a=document.createElement("a");
-          a.href=videoUrl;
-          a.download=isPaid?"reelkit_hd.mp4":"reelkit_compressed.mp4";
+          a.href=processedUrl;
+          // If blob URL → real processed video, else fallback frame
+          a.download=processedUrl.startsWith("blob:")
+            ?(isPaid?"reelkit_hd.webm":"reelkit_compressed.webm")
+            :(isPaid?"reelkit_frame.jpg":"reelkit_frame_compressed.jpg");
           a.click();
         }}
           style={{width:"100%",padding:"15px",borderRadius:12,border:"none",cursor:"pointer",fontSize:17,fontWeight:700,color:"#fff",background:G,boxSizing:"border-box",flexShrink:0}}>
