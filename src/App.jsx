@@ -67,8 +67,12 @@ export default function App() {
 
   const [isResizing,   setIsResizing]   = useState(false);
   const [activeHandle, setActiveHandle] = useState(null);
+  const [isMoving,     setIsMoving]     = useState(false);
+  const [moveOffset,   setMoveOffset]   = useState(null);
   const [isImgResizing,   setIsImgResizing]   = useState(false);
   const [activeImgHandle, setActiveImgHandle] = useState(null);
+  const [isImgMoving,     setIsImgMoving]     = useState(false);
+  const [imgMoveOffset,   setImgMoveOffset]   = useState(null);
 
   const fileRef   = useRef();
   const imgRef    = useRef();
@@ -202,35 +206,63 @@ export default function App() {
     img.src=imgUrl;
   },[imgUrl]);
 
-  // Video canvas events — draw + resize
+  const isInsideBox=(pos,box)=> pos.x>box.x && pos.x<box.x+box.w && pos.y>box.y && pos.y<box.y+box.h;
+
+  // Video canvas events — draw + resize + MOVE
   const vDown=e=>{
     const p=getPos(e,canvasRef.current);
-    if(wBox){ const h=getHandleAt(p,wBox,canvasRef.current); if(h){setIsResizing(true);setActiveHandle(h);return;} }
+    if(wBox){
+      const h=getHandleAt(p,wBox,canvasRef.current);
+      if(h){ setIsResizing(true); setActiveHandle(h); return; }
+      if(isInsideBox(p,wBox)){ setIsMoving(true); setMoveOffset({dx:p.x-wBox.x, dy:p.y-wBox.y}); return; }
+    }
     setDrawing(true); setStartPos(p); setWBox(null); redrawCanvas(null);
   };
   const vMove=e=>{
     const p=getPos(e,canvasRef.current);
     if(isResizing&&activeHandle&&wBox){ const nb=resizeBox(wBox,activeHandle,p); setWBox(nb); redrawCanvas(nb); return; }
+    if(isMoving&&moveOffset&&wBox){
+      const cv=canvasRef.current;
+      const nb={
+        x:Math.max(0,Math.min(p.x-moveOffset.dx, cv.width-wBox.w)),
+        y:Math.max(0,Math.min(p.y-moveOffset.dy, cv.height-wBox.h)),
+        w:wBox.w, h:wBox.h
+      };
+      setWBox(nb); redrawCanvas(nb); return;
+    }
     if(!drawing||!startPos) return;
     const b={x:Math.min(startPos.x,p.x),y:Math.min(startPos.y,p.y),w:Math.abs(p.x-startPos.x),h:Math.abs(p.y-startPos.y)};
     setWBox(b); redrawCanvas(b);
   };
-  const vUp=()=>{ setDrawing(false); setIsResizing(false); setActiveHandle(null); };
+  const vUp=()=>{ setDrawing(false); setIsResizing(false); setActiveHandle(null); setIsMoving(false); setMoveOffset(null); };
 
-  // Image canvas events — draw + resize
+  // Image canvas events — draw + resize + MOVE
   const iDown=e=>{
     const p=getPos(e,imgCvRef.current);
-    if(imgBox){ const h=getHandleAt(p,imgBox,imgCvRef.current); if(h){setIsImgResizing(true);setActiveImgHandle(h);return;} }
+    if(imgBox){
+      const h=getHandleAt(p,imgBox,imgCvRef.current);
+      if(h){ setIsImgResizing(true); setActiveImgHandle(h); return; }
+      if(isInsideBox(p,imgBox)){ setIsImgMoving(true); setImgMoveOffset({dx:p.x-imgBox.x, dy:p.y-imgBox.y}); return; }
+    }
     setImgDrawing(true); setImgStart(p); setImgBox(null); drawImgBox(null);
   };
   const iMove=e=>{
     const p=getPos(e,imgCvRef.current);
     if(isImgResizing&&activeImgHandle&&imgBox){ const nb=resizeBox(imgBox,activeImgHandle,p); setImgBox(nb); drawImgBox(nb); return; }
+    if(isImgMoving&&imgMoveOffset&&imgBox){
+      const cv=imgCvRef.current;
+      const nb={
+        x:Math.max(0,Math.min(p.x-imgMoveOffset.dx, cv.width-imgBox.w)),
+        y:Math.max(0,Math.min(p.y-imgMoveOffset.dy, cv.height-imgBox.h)),
+        w:imgBox.w, h:imgBox.h
+      };
+      setImgBox(nb); drawImgBox(nb); return;
+    }
     if(!imgDrawing||!imgStart) return;
     const b={x:Math.min(imgStart.x,p.x),y:Math.min(imgStart.y,p.y),w:Math.abs(p.x-imgStart.x),h:Math.abs(p.y-imgStart.y)};
     setImgBox(b); drawImgBox(b);
   };
-  const iUp=()=>{ setImgDrawing(false); setIsImgResizing(false); setActiveImgHandle(null); };
+  const iUp=()=>{ setImgDrawing(false); setIsImgResizing(false); setActiveImgHandle(null); setIsImgMoving(false); setImgMoveOffset(null); };
 
   // ── Blur — pixelation + blur, works on any size ──────────
   const applyBlur=(ctx,canvas,box)=>{
@@ -639,17 +671,22 @@ export default function App() {
         </div>
         <p style={{margin:0,fontSize:13,color:"#888"}}>✍️ Draw a box → then drag the <strong>white handles</strong> to resize it precisely</p>
 
-        {/* Canvas fills remaining space */}
-        <div style={{flex:1,borderRadius:14,overflow:"hidden",background:"#111",position:"relative",touchAction:"none",cursor:"crosshair",minHeight:0}}>
+        {/* Canvas — natural aspect ratio, no black bars */}
+        <div style={{flex:1,borderRadius:14,overflow:"hidden",background:"#111",position:"relative",touchAction:"none",minHeight:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
           <canvas ref={canvasRef}
-            style={{width:"100%",height:"100%",objectFit:"contain",display:"block",touchAction:"none"}}
+            style={{width:"100%",height:"auto",display:"block",touchAction:"none",cursor:wBox?"move":"crosshair"}}
             onMouseDown={vDown} onMouseMove={vMove} onMouseUp={vUp} onMouseLeave={vUp}
             onTouchStart={e=>{e.preventDefault();vDown(e);}}
             onTouchMove={e=>{e.preventDefault();vMove(e);}}
             onTouchEnd={e=>{e.preventDefault();vUp();}}/>
           {!wBox&&(
             <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",pointerEvents:"none"}}>
-              <div style={{fontSize:13,color:"rgba(255,255,255,0.8)",background:"rgba(0,0,0,0.6)",padding:"8px 18px",borderRadius:20,whiteSpace:"nowrap"}}>✍️ Click & drag to select</div>
+              <div style={{fontSize:13,color:"rgba(255,255,255,0.8)",background:"rgba(0,0,0,0.6)",padding:"8px 18px",borderRadius:20,whiteSpace:"nowrap"}}>✍️ Draw to select watermark</div>
+            </div>
+          )}
+          {wBox&&(
+            <div style={{position:"absolute",bottom:10,left:"50%",transform:"translateX(-50%)",pointerEvents:"none"}}>
+              <div style={{fontSize:12,color:"rgba(255,255,255,0.7)",background:"rgba(0,0,0,0.55)",padding:"5px 14px",borderRadius:20,whiteSpace:"nowrap"}}>Drag box to move · Drag handles to resize</div>
             </div>
           )}
         </div>
@@ -778,9 +815,25 @@ export default function App() {
           <button onClick={()=>setScreen("home")} style={{background:"none",border:"none",color:"#888",cursor:"pointer",fontSize:14,padding:0}}>← Back</button>
           <span style={{fontSize:15,fontWeight:700,color:"#111"}}>Select Watermark</span>
         </div>
-        <p style={{margin:0,fontSize:13,color:"#888"}}>✍️ Draw a box → drag <strong>white handles</strong> to resize precisely</p>
-        <div style={{flex:1,borderRadius:14,overflow:"hidden",background:"#f5f5f7",position:"relative",touchAction:"none",cursor:"crosshair",minHeight:0,border:"2px solid #e2e2e8"}}>
+        <p style={{margin:0,fontSize:13,color:"#888"}}>✍️ Draw box → drag <strong>handles</strong> to resize · drag <strong>inside</strong> to move</p>
+        <div style={{flex:1,borderRadius:14,overflow:"hidden",background:"#f5f5f7",position:"relative",touchAction:"none",minHeight:0,border:"2px solid #e2e2e8",display:"flex",alignItems:"center",justifyContent:"center"}}>
           <canvas ref={imgCvRef}
+            style={{width:"100%",height:"auto",display:"block",touchAction:"none",cursor:imgBox?"move":"crosshair"}}
+            onMouseDown={iDown} onMouseMove={iMove} onMouseUp={iUp} onMouseLeave={iUp}
+            onTouchStart={e=>{e.preventDefault();iDown(e);}}
+            onTouchMove={e=>{e.preventDefault();iMove(e);}}
+            onTouchEnd={e=>{e.preventDefault();iUp();}}/>
+          {!imgBox&&(
+            <div style={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",pointerEvents:"none"}}>
+              <div style={{fontSize:13,color:"rgba(0,0,0,0.4)",background:"rgba(255,255,255,0.9)",padding:"8px 16px",borderRadius:20,whiteSpace:"nowrap"}}>✍️ Draw to select watermark</div>
+            </div>
+          )}
+          {imgBox&&(
+            <div style={{position:"absolute",bottom:10,left:"50%",transform:"translateX(-50%)",pointerEvents:"none"}}>
+              <div style={{fontSize:12,color:"rgba(0,0,0,0.5)",background:"rgba(255,255,255,0.85)",padding:"5px 14px",borderRadius:20,whiteSpace:"nowrap"}}>Drag inside to move · Handles to resize</div>
+            </div>
+          )}
+        </div>
             style={{width:"100%",height:"100%",objectFit:"contain",display:"block",touchAction:"none"}}
             onMouseDown={iDown} onMouseMove={iMove} onMouseUp={iUp} onMouseLeave={iUp}
             onTouchStart={e=>{e.preventDefault();iDown(e);}}
